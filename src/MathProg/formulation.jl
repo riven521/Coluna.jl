@@ -175,26 +175,28 @@ function _addprimalsol!(form::Formulation, sol_id::VarId, sol::PrimalSolution, c
 end
 
 function setprimalsol!(form::Formulation, new_primal_sol::PrimalSolution)::Tuple{Bool,VarId}
-    primal_sols = getprimalsolmatrix(form)
-    primal_sol_costs = getprimalsolcosts(form)
+    TO.@timeit Coluna._to "Generate columns" begin
+        primal_sols = getprimalsolmatrix(form)
+        primal_sol_costs = getprimalsolcosts(form)
 
-    # compute original cost of the column
-    new_cost = 0.0
-    for (var_id, var_val) in new_primal_sol
-        new_cost += getperencost(form, var_id) * var_val
-    end
-
-    # look for an identical column
-    for (cur_sol_id, cur_cost) in primal_sol_costs
-        cur_primal_sol = primal_sols[:, cur_sol_id]
-        if isapprox(new_cost, cur_cost) && getsol(new_primal_sol) == cur_primal_sol
-            return (false, cur_sol_id)
+        # compute original cost of the column
+        new_cost = 0.0
+        for (var_id, var_val) in new_primal_sol
+            new_cost += getperencost(form, var_id) * var_val
         end
-    end
 
-    # no identical column, we insert a new column
-    new_sol_id = generatevarid(DwSpPrimalSol, form)
-    _addprimalsol!(form, new_sol_id, new_primal_sol, new_cost)
+        # look for an identical column
+        for (cur_sol_id, cur_cost) in primal_sol_costs
+            cur_primal_sol = primal_sols[:, cur_sol_id]
+            if isapprox(new_cost, cur_cost) && getsol(new_primal_sol) == cur_primal_sol
+                return (false, cur_sol_id)
+            end
+        end
+
+        # no identical column, we insert a new column
+        new_sol_id = generatevarid(DwSpPrimalSol, form)
+        _addprimalsol!(form, new_sol_id, new_primal_sol, new_cost)
+    end
     return (true, new_sol_id)
 end
 

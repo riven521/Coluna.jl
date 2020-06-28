@@ -255,19 +255,21 @@ function compute_red_cost(
     algo::ColumnGeneration, master::Formulation, spinfo::SubprobInfo,
     spsol::PrimalSolution, lp_dual_sol::DualSolution
 )
-    red_cost::Float64 = 0.0
-    if stabilization_is_used(algo)
-        master_coef_matrix = getcoefmatrix(master)
-        for (varid, value) in spsol
-            red_cost += getcurcost(master, varid) * value
-            for (constrid, var_coeff) in @view master_coef_matrix[:,varid]
-                red_cost -= value * var_coeff * lp_dual_sol[constrid]
+    TO.@timeit Coluna._to "Compute red cost" begin
+        red_cost::Float64 = 0.0
+        if stabilization_is_used(algo)
+            master_coef_matrix = getcoefmatrix(master)
+            for (varid, value) in spsol
+                red_cost += getcurcost(master, varid) * value
+                for (constrid, var_coeff) in @view master_coef_matrix[:,varid]
+                    red_cost -= value * var_coeff * lp_dual_sol[constrid]
+                end
             end
+        else
+            red_cost = getvalue(spsol)
         end
-    else
-        red_cost = getvalue(spsol)
+        red_cost -= (spinfo.lb * spinfo.lb_dual + spinfo.ub * spinfo.ub_dual)
     end
-    red_cost -= (spinfo.lb * spinfo.lb_dual + spinfo.ub * spinfo.ub_dual)
     return red_cost
 end
 
@@ -288,28 +290,34 @@ function solve_sp_to_gencol!(
     # Compute target
     update_pricing_target!(spform)
 
-    output = run!(algo.pricing_prob_solve_alg, spdata, OptimizationInput(OptimizationState(spform)))
+    TO.@timeit Coluna._to "Run pricing solver" begin
+        output = run!(algo.pricing_prob_solve_alg, spdata, OptimizationInput(OptimizationState(spform)))
+    end
     sp_optstate = getoptstate(output)
     spinfo.isfeasible = isfeasible(sp_optstate)
     sp_sol_value = get_ip_primal_bound(sp_optstate)
 
-    compute_db_contributions!(spinfo, get_ip_dual_bound(sp_optstate), sp_sol_value)
+    TO.@timeit Coluna._to "Compute sp contributions" begin
+        compute_db_contributions!(spinfo, get_ip_dual_bound(sp_optstate), sp_sol_value)
+    end    
 
-    sense = getobjsense(masterform)
-    if spinfo.isfeasible && nb_ip_primal_sols(sp_optstate) > 0
-        spinfo.bestsol = get_best_ip_primal_sol(sp_optstate)
-        for sol in get_ip_primal_sols(sp_optstate)
-            if improving_red_cost(compute_red_cost(algo, masterform, spinfo, sol, dualsol), algo, sense)
-                insertion_status, col_id = setprimalsol!(spform, sol)
-                if insertion_status
-                    push!(spinfo.recorded_sol_ids, col_id)
-                elseif !insertion_status && !iscuractive(masterform, col_id)
-                    push!(spinfo.sol_ids_to_activate, col_id)
-                else
-                    msg = """
-                    Column already exists as $(getname(masterform, col_id)) and is already active.
-                    """
-                    @warn string(msg)
+    TO.@timeit Coluna._to "Deciding insertion status" begin
+        sense = getobjsense(masterform)
+        if spinfo.isfeasible && nb_ip_primal_sols(sp_optstate) > 0
+            spinfo.bestsol = get_best_ip_primal_sol(sp_optstate)
+            for sol in get_ip_primal_sols(sp_optstate)
+                if improving_red_cost(compute_red_cost(algo, masterform, spinfo, sol, dualsol), algo, sense)
+                    insertion_status, col_id = setprimalsol!(spform, sol)
+                    if insertion_status
+                        push!(spinfo.recorded_sol_ids, col_id)
+                    elseif !insertion_status && !iscuractive(masterform, col_id)
+                        push!(spinfo.sol_ids_to_activate, col_id)
+                    else
+                        msg = """
+                        Column already exists as $(getname(masterform, col_id)) and is already active.
+                        """
+                        @warn string(msg)
+                    end
                 end
             end
         end
@@ -599,6 +607,7 @@ function cg_main_loop!(
 )
     # Phase II loop: Iterate while can generate new columns and
     # termination by bound does not apply
+    TO.@timeit Coluna._to "Col Gen preparation" begin
     reform = getreform(data)
     masterform = getmaster(reform)
     spinfos = Dict{FormId, SubprobInfo}()
@@ -626,58 +635,63 @@ function cg_main_loop!(
 
     init_stab_before_colgen_loop!(stabstorage)
 
+    end
+
     while true
         for (spuid, spinfo) in spinfos
             clear_before_colgen_iteration!(spinfo)
         end
 
         rm_time = @elapsed begin
+        TO.@timeit Coluna._to "Solve restricted master and get sols" begin
             rm_input = OptimizationInput(
                 OptimizationState(masterform, ip_primal_bound = get_ip_primal_bound(cg_optstate))
             )
             rm_output = run!(algo.restr_master_solve_alg, getmasterdata(data), rm_input)
-        end
-        rm_optstate = getoptstate(rm_output)
-        master_val = get_lp_primal_bound(rm_optstate)
-
-        if phase != 1 && !isfeasible(rm_optstate)
-            status = getfeasibilitystatus(rm_optstate)
-            @warn string("Solver returned that LP restricted master is infeasible or unbounded ",
-            "(feasibility status = " , status, ") during phase != 1.")
-            setfeasibilitystatus!(cg_optstate, status)
-            return true
-        end
-
-        lp_dual_sol = DualSolution(masterform)
-        if nb_lp_dual_sols(rm_optstate) > 0
-            lp_dual_sol = get_best_lp_dual_sol(rm_optstate)
-        else
-            @error string("Solver returned that the LP restricted master is feasible but ",
-            "did not return a dual solution. ",
-            "Please open an issue (https://github.com/atoptima/Coluna.jl/issues).")
-        end
-        if getobjsense(masterform) == MaxSense
-            # this is needed due to convention that MOI uses for signs of duals in the maximization case
-            change_values_sign!(lp_dual_sol)
-        end
-        lp_dual_sol = move_convexity_constrs_dual_values!(spinfos, lp_dual_sol)
-
-        TO.@timeit Coluna._to "Getting primal solution" begin
-        if nb_lp_primal_sols(rm_optstate) > 0
-            rm_sol = get_best_lp_primal_sol(rm_optstate)
-            set_lp_primal_sol!(cg_optstate, rm_sol)
-            set_lp_primal_bound!(cg_optstate, get_lp_primal_bound(rm_optstate))
-
-            if phase != 1 && !contains(rm_sol, varid -> isanArtificialDuty(getduty(varid)))
-                if isinteger(proj_cols_on_rep(rm_sol, masterform))
-                    update_ip_primal_sol!(cg_optstate, rm_sol)
-                end
+            rm_optstate = getoptstate(rm_output)
+            master_val = get_lp_primal_bound(rm_optstate)
+        
+            lp_dual_sol = DualSolution(masterform)
+            if nb_lp_dual_sols(rm_optstate) > 0
+                lp_dual_sol = get_best_lp_dual_sol(rm_optstate)
+            else
+                @error string("Solver returned that the LP restricted master is feasible but ",
+                "did not return a dual solution. ",
+                "Please open an issue (https://github.com/atoptima/Coluna.jl/issues).")
             end
-        else
-            @error string("Solver returned that the LP restricted master is feasible but ",
-            "did not return a primal solution. ",
-            "Please open an issue (https://github.com/atoptima/Coluna.jl/issues).")
+
+            if getobjsense(masterform) == MaxSense
+                # this is needed due to convention that MOI uses for signs of duals in the maximization case
+                change_values_sign!(lp_dual_sol)
+            end
+            lp_dual_sol = move_convexity_constrs_dual_values!(spinfos, lp_dual_sol)
         end
+        end
+
+        TO.@timeit Coluna._to "Checking primal solution" begin
+            if phase != 1 && !isfeasible(rm_optstate)
+                status = getfeasibilitystatus(rm_optstate)
+                @warn string("Solver returned that LP restricted master is infeasible or unbounded ",
+                "(feasibility status = " , status, ") during phase != 1.")
+                setfeasibilitystatus!(cg_optstate, status)
+                return true
+            end
+
+            if nb_lp_primal_sols(rm_optstate) > 0
+                rm_sol = get_best_lp_primal_sol(rm_optstate)
+                set_lp_primal_sol!(cg_optstate, rm_sol)
+                set_lp_primal_bound!(cg_optstate, get_lp_primal_bound(rm_optstate))
+
+                if phase != 1 && !contains(rm_sol, varid -> isanArtificialDuty(getduty(varid)))
+                    if isinteger(proj_cols_on_rep(rm_sol, masterform))
+                        update_ip_primal_sol!(cg_optstate, rm_sol)
+                    end
+                end
+            else
+                @error string("Solver returned that the LP restricted master is feasible but ",
+                "did not return a primal solution. ",
+                "Please open an issue (https://github.com/atoptima/Coluna.jl/issues).")
+            end
         end
 
         TO.@timeit Coluna._to "Cleanup columns" begin
@@ -695,7 +709,9 @@ function cg_main_loop!(
         while true
 
             sp_time += @elapsed begin
-                nb_new_col = solve_sps_to_gencols!(spinfos, algo, phase, data, redcostsvec, lp_dual_sol, smooth_dual_sol)
+                TO.@timeit Coluna._to "Prepare, solve subproblems, and update master" begin
+                    nb_new_col = solve_sps_to_gencols!(spinfos, algo, phase, data, redcostsvec, lp_dual_sol, smooth_dual_sol)
+                end
             end
 
             if nb_new_col < 0
@@ -774,9 +790,11 @@ function print_colgen_statistics(
         phase_string = "##"
     end
 
+    TO.@timeit Coluna._to "Print statistics" begin
     @printf(
         "%s<it=%3i> <et=%5.2f> <mst=%5.2f> <sp=%5.2f> <cols=%2i> <al=%5.2f> <DB=%10.4f> <mlp=%10.4f> <PB=%.4f>\n",
         phase_string, iteration, Coluna._elapsed_solve_time(), mst_time, sp_time, nb_new_col, smoothalpha, db, mlp, pb
     )
+    end
     return
 end

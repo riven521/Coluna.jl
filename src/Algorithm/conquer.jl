@@ -153,7 +153,9 @@ function run!(algo::ColGenConquer, data::ReformData, input::ConquerInput)
     end
 
     nb_tightening_rounds = 0
-    colgen_output = run!(algo.colgen, data, OptimizationInput(nodestate))
+    TO.@timeit Coluna._to "Column Generation" begin
+        colgen_output = run!(algo.colgen, data, OptimizationInput(nodestate))
+    end
     update!(nodestate, getoptstate(colgen_output))
 
     while !to_be_pruned(node) && nb_tightening_rounds < algo.max_nb_cut_rounds

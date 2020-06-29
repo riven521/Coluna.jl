@@ -59,7 +59,9 @@ function run!(algo::SolveLpForm, data::ModelData, input::OptimizationInput)::Opt
         relax_integrality!(form)
     end
 
-    optimizer_result = optimize_lp_form!(algo, getoptimizer(form), form)
+    TO.@timeit Coluna._to "Optimize LP form" begin
+        optimizer_result = optimize_lp_form!(algo, getoptimizer(form), form)
+    end 
 
     setfeasibilitystatus!(optstate, getfeasibilitystatus(optimizer_result))    
     setterminationstatus!(optstate, getterminationstatus(optimizer_result))   

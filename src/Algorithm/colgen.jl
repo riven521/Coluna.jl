@@ -301,23 +301,21 @@ function solve_sp_to_gencol!(
         compute_db_contributions!(spinfo, get_ip_dual_bound(sp_optstate), sp_sol_value)
     end    
 
-    TO.@timeit Coluna._to "Deciding insertion status" begin
-        sense = getobjsense(masterform)
-        if spinfo.isfeasible && nb_ip_primal_sols(sp_optstate) > 0
-            spinfo.bestsol = get_best_ip_primal_sol(sp_optstate)
-            for sol in get_ip_primal_sols(sp_optstate)
-                if improving_red_cost(compute_red_cost(algo, masterform, spinfo, sol, dualsol), algo, sense)
-                    insertion_status, col_id = setprimalsol!(spform, sol)
-                    if insertion_status
-                        push!(spinfo.recorded_sol_ids, col_id)
-                    elseif !insertion_status && !iscuractive(masterform, col_id)
-                        push!(spinfo.sol_ids_to_activate, col_id)
-                    else
-                        msg = """
-                        Column already exists as $(getname(masterform, col_id)) and is already active.
-                        """
-                        @warn string(msg)
-                    end
+    sense = getobjsense(masterform)
+    if spinfo.isfeasible && nb_ip_primal_sols(sp_optstate) > 0
+        spinfo.bestsol = get_best_ip_primal_sol(sp_optstate)
+        for sol in get_ip_primal_sols(sp_optstate)
+            if improving_red_cost(compute_red_cost(algo, masterform, spinfo, sol, dualsol), algo, sense)
+                insertion_status, col_id = setprimalsol!(spform, sol)
+                if insertion_status
+                    push!(spinfo.recorded_sol_ids, col_id)
+                elseif !insertion_status && !iscuractive(masterform, col_id)
+                    push!(spinfo.sol_ids_to_activate, col_id)
+                else
+                    msg = """
+                    Column already exists as $(getname(masterform, col_id)) and is already active.
+                    """
+                    @warn string(msg)
                 end
             end
         end
@@ -448,7 +446,7 @@ function cleanup_columns(algo::ColumnGeneration, iteration::Int64, data::ReformD
     # TO DO : master cleanup should be done on every iteration, for this we need
     # to quickly check the number of active master columns
     iteration % 10 != 0 && return
-
+    
     cols_with_redcost = Vector{Pair{Variable, Float64}}()
     master = getmodel(getmasterdata(data))
     for (id, var) in getvars(master)

@@ -192,7 +192,9 @@ end
 function optimize!(form::Formulation, optimizer::MoiOptimizer)
     @logmsg LogLevel(-4) "MOI formulation before synch: "
     @logmsg LogLevel(-4) getoptimizer(form)
-    sync_solver!(getoptimizer(form), form)
+    TO.@timeit Coluna._to "Sync solver" begin
+        sync_solver!(getoptimizer(form), form)
+    end    
     @logmsg LogLevel(-3) "MOI formulation after synch: "
     @logmsg LogLevel(-3) getoptimizer(form)
     nbvars = MOI.get(form.optimizer.inner, MOI.NumberOfVariables())
@@ -200,10 +202,15 @@ function optimize!(form::Formulation, optimizer::MoiOptimizer)
         @warn "No variable in the formulation. Coluna does not call the solver."
         return retrieve_result(form, optimizer)
     end
-    MOI.optimize!(getinner(form.optimizer))
-    status = MOI.get(form.optimizer.inner, MOI.TerminationStatus())
-    @logmsg LogLevel(-2) string("Optimization finished with status: ", status)
-    return retrieve_result(form, optimizer)
+    TO.@timeit Coluna._to "MOI.optimize" begin
+        MOI.optimize!(getinner(form.optimizer))
+    end
+    TO.@timeit Coluna._to "Get result and status" begin
+        status = MOI.get(form.optimizer.inner, MOI.TerminationStatus())
+        @logmsg LogLevel(-2) string("Optimization finished with status: ", status)
+        result =  retrieve_result(form, optimizer)
+    end    
+    return result
 end
 
 function sync_solver!(optimizer::MoiOptimizer, f::Formulation)

@@ -40,17 +40,17 @@ end
 
 stabilization_is_used(algo::ColumnGeneration) = !iszero(algo.smoothing_stabilization)
 
-function get_child_algorithms(algo::ColumnGeneration, reform::Reformulation) 
+function get_child_algorithms(algo::ColumnGeneration, reform::Reformulation)
     child_algs = Tuple{AbstractAlgorithm, AbstractModel}[]
     push!(child_algs, (algo.restr_master_solve_alg, getmaster(reform)))
     for (id, spform) in get_dw_pricing_sps(reform)
         push!(child_algs, (algo.pricing_prob_solve_alg, spform))
     end
     return child_algs
-end 
+end
 
-function get_storages_usage(algo::ColumnGeneration, reform::Reformulation) 
-    storages_usage = Tuple{AbstractModel, StorageTypePair, StorageAccessMode}[] 
+function get_storages_usage(algo::ColumnGeneration, reform::Reformulation)
+    storages_usage = Tuple{AbstractModel, StorageTypePair, StorageAccessMode}[]
     master = getmaster(reform)
     push!(storages_usage, (master, MasterColumnsStoragePair, READ_AND_WRITE))
     if stabilization_is_used(algo)
@@ -456,7 +456,7 @@ function cleanup_columns(algo::ColumnGeneration, iteration::Int64, data::ReformD
             num_cols_removed += 1
         end
     end
-    @logmsg LogLevel(-1) "Cleaned up $num_cols_removed master columns"
+    #@logmsg LogLevel(-1) "Cleaned up $num_cols_removed master columns"
     return
 end
 
@@ -609,7 +609,7 @@ function cg_main_loop!(
     redcostsvec = ReducedCostsVector(dwspvars, dwspforms)
     iteration = 0
 
-    stabstorage = (stabilization_is_used(algo) ? getstorage(getmasterdata(data), ColGenStabilizationStoragePair) 
+    stabstorage = (stabilization_is_used(algo) ? getstorage(getmasterdata(data), ColGenStabilizationStoragePair)
                                                : ColGenStabilizationStorage(masterform) )
 
     init_stab_before_colgen_loop!(stabstorage)

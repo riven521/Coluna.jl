@@ -33,6 +33,7 @@ restricted master and `pricing_prob_solve_alg` to solve the subproblems.
     store_all_ip_primal_sols::Bool = false
     redcost_tol::Float64 = 1e-5
     solve_subproblems_parallel::Bool = false
+    solve_subproblems_scheduling::Symbol = :static
     cleanup_threshold::Int64 = 10000
     cleanup_ratio::Float64 = 0.66
     smoothing_stabilization::Float64 = 0.0 # should be in [0, 1]
@@ -375,20 +376,43 @@ function solve_sps_to_gencols!(
         updatereducedcosts!(reform, redcostsvec, smooth_dual_sol)
     end
 
-    ### BEGIN LOOP TO BE PARALLELIZED
-    if algo.solve_subproblems_parallel
-        spuids = collect(keys(spsdatas))
-        Threads.@threads for key in 1:length(spuids)
-            spuid = spuids[key]
-            spdata = spsdatas[spuid]
-            solve_sp_to_gencol!(spinfos[spuid], algo, masterform, spdata, lp_dual_sol)
+    distribution = fill(Int64[], Threads.nthreads())
+    threadstimes_local = zeros(Threads.nthreads())
+    TO.@timeit Coluna._to "Solve sps loop" begin
+        ### BEGIN LOOP TO BE PARALLELIZED
+        if algo.solve_subproblems_parallel
+            spuids = collect(keys(spsdatas))
+            if algo.solve_subproblems_scheduling == :static
+                Threads.@threads for key in 1:length(spuids)
+                    # push!(distribution[Threads.threadid()], key)
+                    timed = @timed begin
+                        spuid = spuids[key]
+                        spdata = spsdatas[spuid]
+                        solve_sp_to_gencol!(spinfos[spuid], algo, masterform, spdata, lp_dual_sol)
+                    end
+                    #@show timed[2]
+                    # threadstimes_local[Threads.threadid()] += timed[2]
+                end
+            else
+                @sync for key in 1:length(spuids)
+                    Threads.@spawn begin
+                        spuid = spuids[key]
+                        spdata = spsdatas[spuid]
+                        solve_sp_to_gencol!(spinfos[spuid], algo, masterform, spdata, lp_dual_sol)
+                    end
+                end
+            end
+            #@show distribution
+            #@show threadstimes_local
+            # push!(Coluna.taskdistribution, copy(distribution))
+            # push!(Coluna.threadstimes, copy(threadstimes_local))
+        else
+            for (spuid, spdata) in spsdatas
+                solve_sp_to_gencol!(spinfos[spuid], algo, masterform, spdata, lp_dual_sol)
+            end
         end
-    else
-        for (spuid, spdata) in spsdatas
-            solve_sp_to_gencol!(spinfos[spuid], algo, masterform, spdata, lp_dual_sol)
-        end
+        ### END LOOP TO BE PARALLELIZED
     end
-    ### END LOOP TO BE PARALLELIZED
 
     for (spuid, spinfo) in spinfos
         !spinfo.isfeasible && return -1

@@ -3,6 +3,8 @@
 end
 
 global const _to = TO.TimerOutput()
+global threadstimes = []
+global taskdistribution = []
 
 _elapsed_solve_time() = (time() - _globals_.initial_solve_time)
 
